@@ -1,7 +1,12 @@
 package org.example;
 
 import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.KafkaException;
+import org.apache.kafka.common.errors.AuthorizationException;
+import org.apache.kafka.common.errors.OutOfOrderSequenceException;
+import org.apache.kafka.common.errors.ProducerFencedException;
 import org.apache.kafka.common.serialization.StringSerializer;
 
 import java.util.Properties;
@@ -17,25 +22,38 @@ public class SendMessageToTopic {
 
 
         Properties props = new Properties();
-        props.setProperty("bootstrap.servers", brokers);
+        props.put("bootstrap.servers", brokers);
+        props.put("transactional.id", "my-transactional-id");
+        props.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, "true");
 
         //converts objects to bytes
-        props.setProperty("key.serializer", StringSerializer.class.getName());
-        props.setProperty("value.serializer", StringSerializer.class.getName());
+        props.put("key.serializer", StringSerializer.class.getName());
+        props.put("value.serializer", StringSerializer.class.getName());
 
         //handle auth
-        props.setProperty("security.protocol", "SASL_SSL");
-        props.setProperty("sasl.mechanism", "SCRAM-SHA-256");
-        props.setProperty("sasl.jaas.config", "org.apache.kafka.common.security.scram.ScramLoginModule required username =\""+username+"\" password= \""+password+"\";");
+        props.put("security.protocol", "SASL_SSL");
+        props.put("sasl.mechanism", "SCRAM-SHA-256");
+        props.put("sasl.jaas.config", "org.apache.kafka.common.security.scram.ScramLoginModule required username =\""+username+"\" password= \""+password+"\";");
 
         KafkaProducer<String, String> myProducer = new KafkaProducer<>(props);
 
-        ProducerRecord<String, String> record = new ProducerRecord<String,String>(topic,"record1");
-        ProducerRecord<String, String> recordKV = new ProducerRecord<String,String>(topic,"this is a key","this is a value");
-        ProducerRecord<String, String> recordPart = new ProducerRecord<String,String>(topic2, 2,"key2","value2");
-        myProducer.send(record);
-        myProducer.send(recordKV);
-        myProducer.send(recordPart);
+
+        myProducer.initTransactions();
+        try {
+            myProducer.beginTransaction();
+            for (int i = 0; i < 100; i++)
+                myProducer.send(new ProducerRecord<>(topic, Integer.toString(i), Integer.toString(i)));
+            myProducer.commitTransaction();
+        } catch (ProducerFencedException | OutOfOrderSequenceException | AuthorizationException e) {
+            // We can't recover from these exceptions, so our only option is to close the producer and exit.
+           // System.out.println("exception");
+            myProducer.close();
+        } catch (KafkaException e) {
+            // For all other exceptions, just abort the transaction and try again.
+           // System.out.println("ABORTED");
+            myProducer.abortTransaction();
+        }
+        myProducer.close();
 
         myProducer.flush();
         myProducer.close();
